@@ -15,5 +15,5 @@ An advanced, low-cost, multipurpose IoT monitoring node powered by an **ESP32** 
 
 ## Project Team
 - **Arsh** ([https://github.com/ArshOnGit])
-- **Preetish Singh** 
+- **Preetish Singh** ([https://github.com/PreetishSingh])
 - **Suraj Durgapal** ([https://github.com/Suraj-Durgapal])
