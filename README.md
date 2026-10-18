@@ -12,3 +12,8 @@ An advanced, low-cost, multipurpose IoT monitoring node powered by an **ESP32** 
 - **Firmware:** Arduino IDE (C++)
 - **Edge AI:** TensorFlow Lite for Microcontrollers / Edge Impulse
 - **Dashboard:** Blynk IoT Cloud
+
+## Project Team
+- **Arsh** 
+- **Preetish Singh** 
+- **Suraj Durgapal** 
