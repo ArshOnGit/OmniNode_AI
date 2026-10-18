@@ -14,6 +14,6 @@ An advanced, low-cost, multipurpose IoT monitoring node powered by an **ESP32** 
 - **Dashboard:** Blynk IoT Cloud
 
 ## Project Team
-- **Arsh** 
+- **Arsh** ([https://github.com/ArshOnGit])
 - **Preetish Singh** 
 - **Suraj Durgapal** 
