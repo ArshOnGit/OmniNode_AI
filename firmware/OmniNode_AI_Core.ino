@@ -1,8 +1,8 @@
 /**
- * @file OmniNode_Sensor_Engine.ino
- * @brief Multipurpose IoT Monitoring Node (OmniNode-AI) with TinyML Forecasting
- * @details Reads DHT22, calculates Magnus-Tetens Dew Point, NOAA Heat Index, 
- *          and runs a TinyML neural network model locally on the ESP32 for temperature prediction.
+ * @file OmniNode_AI_Core.ino
+ * @brief Multipurpose IoT Monitoring Node (OmniNode-AI) with Dual TinyML Models
+ * @details Reads DHT22, calculates Magnus-Tetens Dew Point, NOAA Heat Index,
+ *          runs FNN Forecasting, and runs a State Classifier on the ESP32.
  * @author Arsh
  * @date October 2026
  */
@@ -12,19 +12,25 @@
 #include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-#include "omninode_model.h" // Your trained neural network model header
+#include "omninode_model.h"          // Forecasting model header
+#include "omninode_classifier.h"     // Environmental state classifier header
 
 #define DHTPIN 4      
 #define DHTTYPE DHT22   
 
 DHT dht(DHTPIN, DHTTYPE);
 
-// TensorFlow Lite Globals for ESP32
-const int kArenaSize = 2048;
+// TensorFlow Lite Globals for ESP32 (Allocating arena for both models)
+const int kArenaSize = 4096; // Increased arena size to safely fit both interpreters
 uint8_t tensor_arena[kArenaSize];
-tflite::MicroInterpreter* interpreter = nullptr;
-TfLiteTensor* input = nullptr;
-TfLiteTensor* output = nullptr;
+
+tflite::MicroInterpreter* forecaster_interpreter = nullptr;
+TfLiteTensor* forecaster_input = nullptr;
+TfLiteTensor* forecaster_output = nullptr;
+
+tflite::MicroInterpreter* classifier_interpreter = nullptr;
+TfLiteTensor* classifier_input = nullptr;
+TfLiteTensor* classifier_output = nullptr;
 
 // Sliding window buffer to store past 15 temperature readings
 const int windowSize = 15;
@@ -35,23 +41,37 @@ bool bufferFilled = false;
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n[INFO] OmniNode-AI: Initializing Sensor & TinyML Engine...");
+  Serial.println("\n[INFO] OmniNode-AI: Initializing Sensor & Dual TinyML Engine...");
   dht.begin();
 
-  // Initialize TFLite Model
   static tflite::AllOpsResolver resolver;
-  static tflite::MicroInterpreter static_interpreter(
-      tflite::GetModel(omninode_model), resolver, tensor_arena, kArenaSize);
-  interpreter = &static_interpreter;
 
-  if (interpreter->AllocateTensors() != kTfLiteOk) {
-    Serial.println("[ERROR] Tensor allocation failed!");
+  // 1. Initialize Temperature Forecasting Model
+  static tflite::MicroInterpreter static_forecaster(
+      tflite::GetModel(omninode_model), resolver, tensor_arena, kArenaSize);
+  forecaster_interpreter = &static_forecaster;
+
+  if (forecaster_interpreter->AllocateTensors() != kTfLiteOk) {
+    Serial.println("[ERROR] Forecasting model tensor allocation failed!");
     return;
   }
+  forecaster_input = forecaster_interpreter->input(0);
+  forecaster_output = forecaster_interpreter->output(0);
 
-  input = interpreter->input(0);
-  output = interpreter->output(0);
-  Serial.println("[INFO] TinyML Model Loaded Successfully!");
+  // 2. Initialize Environmental State Classifier Model
+  // Note: Using a secondary arena partition or sharing the global arena safely
+  static tflite::MicroInterpreter static_classifier(
+      tflite::GetModel(omninode_classifier), resolver, tensor_arena + 2048, 2048);
+  classifier_interpreter = &static_classifier;
+
+  if (classifier_interpreter->AllocateTensors() != kTfLiteOk) {
+    Serial.println("[ERROR] Classifier model tensor allocation failed!");
+    return;
+  }
+  classifier_input = classifier_interpreter->input(0);
+  classifier_output = classifier_interpreter->output(0);
+
+  Serial.println("[INFO] Both TinyML Models Loaded Successfully!");
 }
 
 void loop() {
@@ -79,7 +99,7 @@ void loop() {
                    + 0.00085282 * tempF * humidity * humidity - 0.00000199 * tempF * tempF * humidity * humidity;
   float heatIndexC = (heatIndexF - 32.0) * 5.0 / 9.0;
 
-  // 3. Update Sliding Window & Run TinyML Prediction
+  // 3. Update Sliding Window
   tempBuffer[bufferIndex] = tempC;
   bufferIndex = (bufferIndex + 1) % windowSize;
   if (bufferIndex == 0) bufferFilled = true;
@@ -91,23 +111,48 @@ void loop() {
   Serial.print("Dew Point (Magnus):  "); Serial.print(dewPoint); Serial.println(" °C");
   Serial.print("Heat Index (NOAA):   "); Serial.print(heatIndexC); Serial.println(" °C");
 
-  // Only run AI forecast once we have a full window of 15 samples
+  // Run AI inference once we have a full window of 15 samples
   if (bufferFilled) {
-    // Feed the sliding window into the neural network model input tensor
+    // Reorder sliding window chronologically for inputs
+    float orderedWindow[windowSize];
     for (int i = 0; i < windowSize; i++) {
-      int idx = (bufferIndex + i) % windowSize; // Reorder chronologically
-      input->data.f[i] = tempBuffer[idx];
+      int idx = (bufferIndex + i) % windowSize;
+      orderedWindow[i] = tempBuffer[idx];
     }
 
-    // Run inference (prediction)
-    if (interpreter->Invoke() == kTfLiteOk) {
-      float predictedTemp = output->data.f[0];
-      Serial.print("AI Predicted Temp:   "); Serial.print(predictedTemp); Serial.println(" °C (30-min outlook)");
-    } else {
-      Serial.println("[ERROR] Model inference failed.");
+    // --- A. Run Temperature Forecasting ---
+    for (int i = 0; i < windowSize; i++) {
+      forecaster_input->data.f[i] = orderedWindow[i];
     }
+    if (forecaster_interpreter->Invoke() == kTfLiteOk) {
+      float predictedTemp = forecaster_output->data.f[0];
+      Serial.print("AI Forecast Temp:    "); Serial.print(predictedTemp); Serial.println(" °C (30-min outlook)");
+    }
+
+    // --- B. Run Environmental State Classification ---
+    for (int i = 0; i < windowSize; i++) {
+      classifier_input->data.f[i] = orderedWindow[i];
+    }
+    if (classifier_interpreter->Invoke() == kTfLiteOk) {
+      // Softmax outputs probabilities for [Idle, Warming, Cooling]
+      float probIdle = classifier_output->data.f[0];
+      float probWarming = classifier_output->data.f[1];
+      float probCooling = classifier_output->data.f[2];
+
+      // Determine max probability class
+      int predictedState = 0;
+      float maxProb = probIdle;
+      if (probWarming > maxProb) { maxProb = probWarming; predictedState = 1; }
+      if (probCooling > maxProb) { maxProb = probCooling; predictedState = 2; }
+
+      Serial.print("AI State Class:      ");
+      if (predictedState == 0) Serial.println("Stable / Idle");
+      else if (predictedState == 1) Serial.println("Warming / Active");
+      else Serial.println("Cooling / Ventilation");
+    }
+
   } else {
-    Serial.print("AI Model Warming Up... (");
+    Serial.print("AI Models Warming Up... (");
     Serial.print(bufferIndex);
     Serial.println("/15 samples collected)");
   }
