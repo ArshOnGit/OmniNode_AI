@@ -70,8 +70,6 @@ OmniNode-AI/
 - **Firmware Logic (`OmniNode_AI_Core.ino`)**: 
   - Combines sensor polling, mathematical equations, dual TFLite model interpreters, and a 60-point circular RAM rolling buffer.
 
----
-
 ## What's Remaining (Future Deployment)
 - **Physical Hardware Wiring**: Wiring the physical ESP32 development board to a DHT22 sensor module.
 - **Wi-Fi & Blynk App Integration**: Injecting live Wi-Fi credentials (`ssid`/`pass`), adding the Blynk IoT library connection, and mapping the RAM history arrays (`blynkTempHistory`) to Blynk Virtual Pins and SuperChart.
