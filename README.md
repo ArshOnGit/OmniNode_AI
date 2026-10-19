@@ -17,7 +17,6 @@ An advanced, low-cost, multipurpose IoT monitoring node powered by an **ESP32** 
 - **Arsh** ([https://github.com/ArshOnGit])
 - **Preetish Singh** ([https://github.com/PreetishSingh])
 - **Suraj Durgapal** ([https://github.com/Suraj-Durgapal])
-- 
 
 ## Prerequisites & Arduino IDE Setup
 
