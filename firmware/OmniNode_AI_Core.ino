@@ -1,8 +1,8 @@
 /**
  * @file OmniNode_AI_Core.ino
- * @brief Multipurpose IoT Monitoring Node (OmniNode-AI) with Dual TinyML Models
+ * @brief Multipurpose IoT Monitoring Node (OmniNode-AI) with Dual TinyML Models & RAM Rolling Buffer
  * @details Reads DHT22, calculates Magnus-Tetens Dew Point, NOAA Heat Index,
- *          runs FNN Forecasting, and runs a State Classifier on the ESP32.
+ *          runs FNN Forecasting, State Classification, and manages a RAM circular buffer for Blynk.
  * @author Arsh
  * @date October 2026
  */
@@ -20,8 +20,8 @@
 
 DHT dht(DHTPIN, DHTTYPE);
 
-// TensorFlow Lite Globals for ESP32 (Allocating arena for both models)
-const int kArenaSize = 4096; // Increased arena size to safely fit both interpreters
+// TensorFlow Lite Globals for ESP32
+const int kArenaSize = 4096;
 uint8_t tensor_arena[kArenaSize];
 
 tflite::MicroInterpreter* forecaster_interpreter = nullptr;
@@ -32,25 +32,31 @@ tflite::MicroInterpreter* classifier_interpreter = nullptr;
 TfLiteTensor* classifier_input = nullptr;
 TfLiteTensor* classifier_output = nullptr;
 
-// Sliding window buffer to store past 15 temperature readings
+// 1. Sliding window buffer for TinyML models (15 samples)
 const int windowSize = 15;
 float tempBuffer[windowSize];
 int bufferIndex = 0;
 bool bufferFilled = false;
 
+// 2. RAM Rolling Buffer (Circular Buffer) for Blynk SuperChart History (e.g., last 60 points)
+const int historyCapacity = 60;
+float blynkTempHistory[historyCapacity];
+float blynkHumidityHistory[historyCapacity];
+int historyHead = 0;
+int historyCount = 0;
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n[INFO] OmniNode-AI: Initializing Sensor & Dual TinyML Engine...");
+  Serial.println("\n[INFO] OmniNode-AI: Initializing Sensor, Dual Models & RAM Rolling Buffer...");
   dht.begin();
 
   static tflite::AllOpsResolver resolver;
 
-  // 1. Initialize Temperature Forecasting Model
+  // Initialize Temperature Forecasting Model
   static tflite::MicroInterpreter static_forecaster(
       tflite::GetModel(omninode_model), resolver, tensor_arena, kArenaSize);
   forecaster_interpreter = &static_forecaster;
-
   if (forecaster_interpreter->AllocateTensors() != kTfLiteOk) {
     Serial.println("[ERROR] Forecasting model tensor allocation failed!");
     return;
@@ -58,12 +64,10 @@ void setup() {
   forecaster_input = forecaster_interpreter->input(0);
   forecaster_output = forecaster_interpreter->output(0);
 
-  // 2. Initialize Environmental State Classifier Model
-  // Note: Using a secondary arena partition or sharing the global arena safely
+  // Initialize Environmental State Classifier Model
   static tflite::MicroInterpreter static_classifier(
       tflite::GetModel(omninode_classifier), resolver, tensor_arena + 2048, 2048);
   classifier_interpreter = &static_classifier;
-
   if (classifier_interpreter->AllocateTensors() != kTfLiteOk) {
     Serial.println("[ERROR] Classifier model tensor allocation failed!");
     return;
@@ -71,7 +75,7 @@ void setup() {
   classifier_input = classifier_interpreter->input(0);
   classifier_output = classifier_interpreter->output(0);
 
-  Serial.println("[INFO] Both TinyML Models Loaded Successfully!");
+  Serial.println("[INFO] System Ready & Fully Initialized!");
 }
 
 void loop() {
@@ -99,10 +103,16 @@ void loop() {
                    + 0.00085282 * tempF * humidity * humidity - 0.00000199 * tempF * tempF * humidity * humidity;
   float heatIndexC = (heatIndexF - 32.0) * 5.0 / 9.0;
 
-  // 3. Update Sliding Window
+  // 3. Update TinyML Sliding Window
   tempBuffer[bufferIndex] = tempC;
   bufferIndex = (bufferIndex + 1) % windowSize;
   if (bufferIndex == 0) bufferFilled = true;
+
+  // 4. Update RAM Rolling Buffer for Blynk SuperChart History
+  blynkTempHistory[historyHead] = tempC;
+  blynkHumidityHistory[historyHead] = humidity;
+  historyHead = (historyHead + 1) % historyCapacity;
+  if (historyCount < historyCapacity) historyCount++;
 
   // Serial Telemetry Output
   Serial.println("----------------------------------------");
@@ -110,10 +120,10 @@ void loop() {
   Serial.print("Relative Humidity:   "); Serial.print(humidity); Serial.println(" %");
   Serial.print("Dew Point (Magnus):  "); Serial.print(dewPoint); Serial.println(" °C");
   Serial.print("Heat Index (NOAA):   "); Serial.print(heatIndexC); Serial.println(" °C");
+  Serial.print("RAM History Buffer:  "); Serial.print(historyCount); Serial.println("/60 points logged");
 
   // Run AI inference once we have a full window of 15 samples
   if (bufferFilled) {
-    // Reorder sliding window chronologically for inputs
     float orderedWindow[windowSize];
     for (int i = 0; i < windowSize; i++) {
       int idx = (bufferIndex + i) % windowSize;
@@ -134,12 +144,10 @@ void loop() {
       classifier_input->data.f[i] = orderedWindow[i];
     }
     if (classifier_interpreter->Invoke() == kTfLiteOk) {
-      // Softmax outputs probabilities for [Idle, Warming, Cooling]
       float probIdle = classifier_output->data.f[0];
       float probWarming = classifier_output->data.f[1];
       float probCooling = classifier_output->data.f[2];
 
-      // Determine max probability class
       int predictedState = 0;
       float maxProb = probIdle;
       if (probWarming > maxProb) { maxProb = probWarming; predictedState = 1; }
