@@ -17,8 +17,7 @@ An advanced, low-cost, multipurpose IoT monitoring node powered by an **ESP32** 
 - **Arsh** ([https://github.com/ArshOnGit])
 - **Preetish Singh** ([https://github.com/PreetishSingh])
 - **Suraj Durgapal** ([https://github.com/Suraj-Durgapal])
-
----
+- 
 
 ## Prerequisites & Arduino IDE Setup
 
@@ -37,7 +36,6 @@ Open the **Library Manager** (`Ctrl+Shift+P` or **Tools > Manage Libraries**), s
 * **`Adafruit Unified Sensor`** (by Adafruit) — *Required dependency for the DHT library.*
 * **`TensorFlowLite_ESP32`** (by QuantumLeap / TensorFlow authors) — *Enables local TFLite micro-interpreter execution on the ESP32 core.*
 
----
 
 ## Repository Structure
 
