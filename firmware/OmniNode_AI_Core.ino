@@ -7,161 +7,114 @@
  * @date October 2026
  */
 
+#include <Arduino.h>
 #include <DHT.h>
-#include <TensorFlowLite_ESP32.h>
-#include "tensorflow/lite/micro/all_ops_resolver.h"
-#include "tensorflow/lite/micro/micro_interpreter.h"
-#include "tensorflow/lite/schema/schema_generated.h"
-#include "omninode_model.h"          // Forecasting model header
-#include "omninode_classifier.h"     // Environmental state classifier header
+#include "model_config.h"
+#include "environmental_features.h"
+#include "sensor_processing.h"
+#include "inference_engine.h"
 
-#define DHTPIN 4      
-#define DHTTYPE DHT22   
+// ---------- wiring (change if yours differs) ----------
+constexpr uint8_t DHT_PIN = 4;
+constexpr uint8_t BUZZER_PIN = 18;
+constexpr uint8_t RELAY_PIN = 19;          // fan relay
+constexpr bool RELAY_ACTIVE_LOW = false;   // many relay modules are active-LOW
 
-DHT dht(DHTPIN, DHTTYPE);
+// ---------- thresholds ----------
+constexpr float TEMP_HIGH_C = 25.0f;
+constexpr float TEMP_LOW_C = 18.0f;
 
-// TensorFlow Lite Globals for ESP32
-const int kArenaSize = 4096;
-uint8_t tensor_arena[kArenaSize];
+// ---------- timing ----------
+constexpr uint32_t READ_INTERVAL_MS = 30000UL;                    // DHT22 needs >= 2 s
+constexpr uint32_t STEP_MS = (uint32_t)STEP_MINUTES * 60000UL;    // one model sample
 
-tflite::MicroInterpreter* forecaster_interpreter = nullptr;
-TfLiteTensor* forecaster_input = nullptr;
-TfLiteTensor* forecaster_output = nullptr;
+DHT dht(DHT_PIN, DHT22);
+StepAverager averager;
 
-tflite::MicroInterpreter* classifier_interpreter = nullptr;
-TfLiteTensor* classifier_input = nullptr;
-TfLiteTensor* classifier_output = nullptr;
+float history[WINDOW_SIZE][FEATURE_COUNT];
+int histCount = 0;
+int histHead = 0;   // next write position
 
-// 1. Sliding window buffer for TinyML models (15 samples)
-const int windowSize = 15;
-float tempBuffer[windowSize];
-int bufferIndex = 0;
-bool bufferFilled = false;
+bool modelsReady = false;
+float lastForecastC = NAN;
+int lastRisk = -1;
+uint32_t lastTempInferUs = 0, lastRiskInferUs = 0;
+uint32_t lastRead = 0, stepStart = 0;
 
-// 2. RAM Rolling Buffer (Circular Buffer) for Blynk SuperChart History (e.g., last 60 points)
-const int historyCapacity = 60;
-float blynkTempHistory[historyCapacity];
-float blynkHumidityHistory[historyCapacity];
-int historyHead = 0;
-int historyCount = 0;
+void setOutputs(bool buzzer, bool fan) {
+  digitalWrite(BUZZER_PIN, buzzer ? HIGH : LOW);
+  bool level = RELAY_ACTIVE_LOW ? !fan : fan;
+  digitalWrite(RELAY_PIN, level ? HIGH : LOW);
+}
+
+void pushSample(const Features& f) {
+  history[histHead][0] = f.t;
+  history[histHead][1] = f.rh;
+  history[histHead][2] = f.dew;
+  history[histHead][3] = f.dpd;
+  history[histHead][4] = f.vpd;
+  histHead = (histHead + 1) % WINDOW_SIZE;
+  if (histCount < WINDOW_SIZE) histCount++;
+}
+
+void copyWindow(float* out) {   // oldest first; call only when histCount == WINDOW_SIZE
+  int start = histHead;
+  for (int i = 0; i < WINDOW_SIZE; i++) {
+    int idx = (start + i) % WINDOW_SIZE;
+    memcpy(out + i * FEATURE_COUNT, history[idx], FEATURE_COUNT * sizeof(float));
+  }
+}
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  Serial.println("\n[INFO] OmniNode-AI: Initializing Sensor, Dual Models & RAM Rolling Buffer...");
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  setOutputs(false, false);
   dht.begin();
-
-  static tflite::AllOpsResolver resolver;
-
-  // Initialize Temperature Forecasting Model
-  static tflite::MicroInterpreter static_forecaster(
-      tflite::GetModel(omninode_model), resolver, tensor_arena, kArenaSize);
-  forecaster_interpreter = &static_forecaster;
-  if (forecaster_interpreter->AllocateTensors() != kTfLiteOk) {
-    Serial.println("[ERROR] Forecasting model tensor allocation failed!");
-    return;
-  }
-  forecaster_input = forecaster_interpreter->input(0);
-  forecaster_output = forecaster_interpreter->output(0);
-
-  // Initialize Environmental State Classifier Model
-  static tflite::MicroInterpreter static_classifier(
-      tflite::GetModel(omninode_classifier), resolver, tensor_arena + 2048, 2048);
-  classifier_interpreter = &static_classifier;
-  if (classifier_interpreter->AllocateTensors() != kTfLiteOk) {
-    Serial.println("[ERROR] Classifier model tensor allocation failed!");
-    return;
-  }
-  classifier_input = classifier_interpreter->input(0);
-  classifier_output = classifier_interpreter->output(0);
-
-  Serial.println("[INFO] System Ready & Fully Initialized!");
+  modelsReady = initInference();
+  Serial.println(modelsReady ? "Models ready" : "Models NOT ready - using rule-based risk only");
+  delay(2000);
+  lastRead = millis() - READ_INTERVAL_MS;   // read immediately in loop()
+  stepStart = millis();
 }
 
 void loop() {
-  delay(2000); // Sample every 2 seconds
+  uint32_t now = millis();
+  if (now - lastRead < READ_INTERVAL_MS) return;
+  lastRead = now;
 
-  float humidity = dht.readHumidity();
-  float tempC = dht.readTemperature();
-
-  if (isnan(humidity) || isnan(tempC)) {
-    Serial.println("[ERROR] Failed to read from DHT sensor!");
+  SensorReading r = readSensor(dht);
+  if (!r.valid) {
+    Serial.println("Sensor read failed - skipping");
     return;
   }
+  Features f = computeFeatures(r.tempC, r.rh);
+  averager.add(r.tempC, r.rh);
 
-  // 1. Magnus-Tetens Dew Point Calculation
-  float a = 17.27;
-  float b = 237.7;
-  float alpha = ((a * tempC) / (b + tempC)) + log(humidity / 100.0);
-  float dewPoint = (b * alpha) / (a - alpha);
-
-  // 2. NOAA Regression Heat Index Calculation
-  float tempF = (tempC * 9.0 / 5.0) + 32.0;
-  float heatIndexF = -42.379 + 2.04901523 * tempF + 10.14333127 * humidity
-                   - 0.22475541 * tempF * humidity - 0.00683783 * tempF * tempF
-                   - 0.05481717 * humidity * humidity + 0.00122874 * tempF * tempF * humidity
-                   + 0.00085282 * tempF * humidity * humidity - 0.00000199 * tempF * tempF * humidity * humidity;
-  float heatIndexC = (heatIndexF - 32.0) * 5.0 / 9.0;
-
-  // 3. Update TinyML Sliding Window
-  tempBuffer[bufferIndex] = tempC;
-  bufferIndex = (bufferIndex + 1) % windowSize;
-  if (bufferIndex == 0) bufferFilled = true;
-
-  // 4. Update RAM Rolling Buffer for Blynk SuperChart History
-  blynkTempHistory[historyHead] = tempC;
-  blynkHumidityHistory[historyHead] = humidity;
-  historyHead = (historyHead + 1) % historyCapacity;
-  if (historyCount < historyCapacity) historyCount++;
-
-  // Serial Telemetry Output
-  Serial.println("----------------------------------------");
-  Serial.print("Ambient Temperature: "); Serial.print(tempC); Serial.println(" °C");
-  Serial.print("Relative Humidity:   "); Serial.print(humidity); Serial.println(" %");
-  Serial.print("Dew Point (Magnus):  "); Serial.print(dewPoint); Serial.println(" °C");
-  Serial.print("Heat Index (NOAA):   "); Serial.print(heatIndexC); Serial.println(" °C");
-  Serial.print("RAM History Buffer:  "); Serial.print(historyCount); Serial.println("/60 points logged");
-
-  // Run AI inference once we have a full window of 15 samples
-  if (bufferFilled) {
-    float orderedWindow[windowSize];
-    for (int i = 0; i < windowSize; i++) {
-      int idx = (bufferIndex + i) % windowSize;
-      orderedWindow[i] = tempBuffer[idx];
+  // every STEP_MS: push one 5-minute averaged sample and run the models
+  if (now - stepStart >= STEP_MS && averager.count > 0) {
+    pushSample(computeFeatures(averager.meanT(), averager.meanH()));
+    averager.reset();
+    stepStart = now;
+    if (modelsReady && histCount == WINDOW_SIZE) {
+      float window[INPUT_LEN];
+      copyWindow(window);
+      lastForecastC = predictTemperatureC(window, &lastTempInferUs);
+      lastRisk = predictRiskClass(window, &lastRiskInferUs);
     }
-
-    // --- A. Run Temperature Forecasting ---
-    for (int i = 0; i < windowSize; i++) {
-      forecaster_input->data.f[i] = orderedWindow[i];
-    }
-    if (forecaster_interpreter->Invoke() == kTfLiteOk) {
-      float predictedTemp = forecaster_output->data.f[0];
-      Serial.print("AI Forecast Temp:    "); Serial.print(predictedTemp); Serial.println(" °C (30-min outlook)");
-    }
-
-    // --- B. Run Environmental State Classification ---
-    for (int i = 0; i < windowSize; i++) {
-      classifier_input->data.f[i] = orderedWindow[i];
-    }
-    if (classifier_interpreter->Invoke() == kTfLiteOk) {
-      float probIdle = classifier_output->data.f[0];
-      float probWarming = classifier_output->data.f[1];
-      float probCooling = classifier_output->data.f[2];
-
-      int predictedState = 0;
-      float maxProb = probIdle;
-      if (probWarming > maxProb) { maxProb = probWarming; predictedState = 1; }
-      if (probCooling > maxProb) { maxProb = probCooling; predictedState = 2; }
-
-      Serial.print("AI State Class:      ");
-      if (predictedState == 0) Serial.println("Stable / Idle");
-      else if (predictedState == 1) Serial.println("Warming / Active");
-      else Serial.println("Cooling / Ventilation");
-    }
-
-  } else {
-    Serial.print("AI Models Warming Up... (");
-    Serial.print(bufferIndex);
-    Serial.println("/15 samples collected)");
   }
+
+  int risk = (lastRisk >= 0) ? lastRisk : ruleRiskClass(f);
+  bool tempAlert = f.t > TEMP_HIGH_C || f.t < TEMP_LOW_C;
+  bool forecastAlert = !isnan(lastForecastC) &&
+                       (lastForecastC > TEMP_HIGH_C || lastForecastC < TEMP_LOW_C);
+  bool riskHigh = (risk == 2);
+  setOutputs(tempAlert || forecastAlert || riskHigh, f.t > TEMP_HIGH_C || riskHigh);
+
+  Serial.printf("T=%.1fC RH=%.1f%% Dew=%.1fC DPD=%.1f VPD=%.2fkPa | forecast30m=%.1fC risk=%d | "
+                "alerts: temp=%d forecast=%d risk=%d | window=%d/%d | infer_us=%lu/%lu heap=%u\n",
+                f.t, f.rh, f.dew, f.dpd, f.vpd, lastForecastC, risk,
+                tempAlert, forecastAlert, riskHigh, histCount, WINDOW_SIZE,
+                (unsigned long)lastTempInferUs, (unsigned long)lastRiskInferUs,
+                ESP.getFreeHeap());
 }
