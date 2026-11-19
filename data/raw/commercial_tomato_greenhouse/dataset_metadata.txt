@@ -1,1 +1,18 @@
+DATASET METADATA
+================
+Name:               <dataset name>
+Source / link:      <URL or paper>
+License:            <license>
+Greenhouse type:    Commercial tomato greenhouse
+Years used:         2018, 2019, 2020
+Original sampling:  <e.g. every 5 minutes>
+Columns used:       <time column> | <temperature column, unit> | <humidity column, unit>
+Missing values:     <how they appear in the files>
+Notes:              <anything odd, e.g. sensor faults, multiple compartments>
 
+Processing done by model_training/data_preprocessing.py:
+- resampled to 5-minute averages
+- gaps up to 15 minutes filled by interpolation
+- dew point, dew point delta (DPD) and VPD computed
+- risk labels created by rule (see script)
+- chronological 80/20 train/test split
