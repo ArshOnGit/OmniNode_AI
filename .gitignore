@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Jupyter / Colab
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Arduino build output
+build/
+*.elf
+*.bin
+
+# Secrets: NEVER commit Wi-Fi passwords or Blynk tokens
+firmware/secrets.h
+
+# Large raw data files (keep the metadata file, ignore the big originals)
+data/raw/**/*.csv
+data/raw/**/*.xlsx
+!data/raw/**/dataset_metadata.txt
