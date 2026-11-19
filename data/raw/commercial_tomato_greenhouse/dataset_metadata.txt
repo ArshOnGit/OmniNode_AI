@@ -1,18 +1,22 @@
 DATASET METADATA
 ================
-Name:               <dataset name>
-Source / link:      <URL or paper>
-License:            <license>
+Name:               Microclimate monitoring in commercial tomato (Solanum Lycopersicum L.)
+                    greenhouse production and its effect on plant growth, yield and fruit
+                    quality dataset
+Authors:            Salagovic J., Vanhees D., Verboven P., Holsteens K., Verlinden B.,
+                    Huysmans M., Van de Poel B., Nicolai B.
+Source / link:      https://data.mendeley.com/datasets/tkbkzdt5nr/1
+DOI:                10.17632/tkbkzdt5nr.1
+Published:          7 October 2022 (Version 1), Mendeley Data
+Licence:            CC BY 4.0 (attribution required)
+Location:           Proefcentrum Hoogstraten, Belgium (GROW! project, Interreg Vl-Nl)
 Greenhouse type:    Commercial tomato greenhouse
 Years used:         2018, 2019, 2020
-Original sampling:  <e.g. every 5 minutes>
-Columns used:       <time column> | <temperature column, unit> | <humidity column, unit>
-Missing values:     <how they appear in the files>
-Notes:              <anything odd, e.g. sensor faults, multiple compartments>
-
-Processing done by model_training/data_preprocessing.py:
-- resampled to 5-minute averages
-- gaps up to 15 minutes filled by interpolation
-- dew point, dew point delta (DPD) and VPD computed
-- risk labels created by rule (see script)
-- chronological 80/20 train/test split
+Sensors:            Priva Electronic Measuring Box central weather station (above canopy,
+                    middle of each compartment) and Sensirion SHT31 Smart Gadget sensors
+Folders used:       T&RH (temperature, relative humidity)
+Folders not used:   PlantData (truss weight, firmness, colour, etc.)
+Original sampling:  <fill in from the T&RH Info table>
+Columns used:       <fill in: time | temperature | humidity>
+Missing values:     <fill in>
+Notes:              <fill in: compartments, sensor source chosen>
