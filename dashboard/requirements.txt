@@ -1,0 +1,2 @@
+# Dashboard bridge (only needed for a real board over USB; --simulate needs nothing)
+pyserial>=3.5,<4

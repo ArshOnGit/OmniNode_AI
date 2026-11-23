@@ -1,0 +1,13 @@
+.pio/
+__pycache__/
+*.py[cod]
+
+# Keep locally obtained greenhouse datasets out of commits by default.
+data/raw/
+data/processed_greenhouse.csv
+data/environmental_risk_labeled.csv
+
+# Generated training and conversion outputs.
+model_training/artifacts/
+dashboard/history.sqlite
+.venv/
